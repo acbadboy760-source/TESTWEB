@@ -1,4 +1,0 @@
-
-[2026-05-12 19:36:57] 127.0.0.1 | Mozilla/5.0 (compatible; Google-Apps-Script; beanserver; +https://script.google. | Referer: direct | Path: /
-[2026-05-12 19:37:01] 127.0.0.1 | Mozilla/5.0 (compatible; Google-Apps-Script; beanserver; +https://script.google. | Referer: direct | Path: /
-[2026-05-12 19:37:03] 127.0.0.1 | Mozilla/5.0 (compatible; Google-Apps-Script; beanserver; +https://script.google. | Referer: https://deposits-explicitly-bind-craft.trycloudflare.com/ | Path: /favicon.ico
