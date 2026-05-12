@@ -1,51 +1,86 @@
-name: 🏰 Fortress - Advanced L7 Target with WAF
+name: Fortress L7 - Hardened Nginx Target
 
 on:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   fortress:
     runs-on: ubuntu-latest
     steps:
-      - name: 🔧 ساخت قلعه (Nginx + ModSecurity)
+      - name: دریافت مخزن
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: تنظیمات Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: ساخت قلعه Nginx
         run: |
           sudo apt-get update
-          sudo apt-get install -y nginx nginx-module-security
+          sudo apt-get install -y nginx
 
-          # فعال‌سازی قوانین پیش‌فرض OWASP
-          sudo sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/nginx/modsec/main.conf
+          # صفحه تست
+          sudo mkdir -p /var/www/html
+          echo '<h1>🏰 Fortress is alive!</h1>' | sudo tee /var/www/html/index.html
 
-          # اضافه کردن Rate Limiting و سایر دفاع‌ها
-          cat << 'NGINX_CONF' | sudo tee /etc/nginx/sites-enabled/fortress
-          limit_req_zone $binary_remote_addr zone=attackzone:10m rate=5r/s;
+          # کانفیگ سختگیرانه Nginx
+          sudo tee /etc/nginx/sites-enabled/fortress << 'NGINX'
+          # Rate Limiting: حداکثر ۱۰ درخواست در ثانیه، با burst ۲۰ تایی
+          limit_req_zone $binary_remote_addr zone=ddos:10m rate=10r/s;
+          # Connection Limiting: حداکثر ۲۰ کانکشن هم‌زمان از هر IP
+          limit_conn_zone $binary_remote_addr zone=connlimit:10m;
 
           server {
-              listen 8080;
-              ModSecurityEnabled on;
-              ModSecurityConfig /etc/nginx/modsec/main.conf;
+              listen 8080 default_server;
+
+              # محدودیت‌های اصلی
+              limit_req zone=ddos burst=20 nodelay;
+              limit_conn connlimit 20;
+
+              # Timeoutهای کوتاه برای کشتن Slowloris و RUDY
+              client_body_timeout 5s;
+              client_header_timeout 5s;
+              keepalive_timeout 5s;
+              send_timeout 5s;
+
+              # محدودیت حجم هدر و بادی
+              client_body_buffer_size 10k;
+              client_header_buffer_size 1k;
+              client_max_body_size 10k;
+              large_client_header_buffers 2 1k;
+
+              # مسدود کردن User-Agentهای مشکوک (اختیاری)
+              if ($http_user_agent ~* (python|curl|wget|scrapy|nikto|sqlmap)) {
+                  return 403;
+              }
 
               location / {
-                  limit_req zone=attackzone burst=20 nodelay;
                   root /var/www/html;
                   index index.html;
               }
           }
-          NGINX_CONF
+          NGINX
 
-          # ساخت صفحه
-          sudo mkdir -p /var/www/html
-          sudo tee /var/www/html/index.html << 'HTML'
-          <h1>🏰 Fortress is alive!</h1>
-          HTML
-
+          sudo rm /etc/nginx/sites-enabled/default
           sudo systemctl restart nginx
 
-      - name: 🚀 اجرای قلعه
+      - name: نصب cloudflared
         run: |
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
+
+      - name: راه‌اندازی قلعه و تونل
+        run: |
           ./cloudflared tunnel --url http://localhost:8080 2>&1 | tee /tmp/cf-log &
-          sleep 15
+          sleep 12
           URL=$(grep -oP 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cf-log | head -n 1)
           echo "🏰 قلعه مستحکم شما: $URL"
+          echo "🛡️ این سرور دارای Rate Limiting و Connection Limiting است."
+          echo "⏱️ تا ۶ ساعت آنلاین می‌ماند."
           sleep 21600
