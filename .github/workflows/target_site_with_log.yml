@@ -1,106 +1,51 @@
-name: Temporary Target Server with Visitor Log
+name: 🏰 Fortress - Advanced L7 Target with WAF
 
 on:
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  server:
+  fortress:
     runs-on: ubuntu-latest
     steps:
-      - name: دریافت مخزن
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: تنظیمات Git
+      - name: 🔧 ساخت قلعه (Nginx + ModSecurity)
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          sudo apt-get update
+          sudo apt-get install -y nginx nginx-module-security
 
-      - name: ساخت صفحه هدف و سرور پیشرفته
+          # فعال‌سازی قوانین پیش‌فرض OWASP
+          sudo sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/nginx/modsec/main.conf
+
+          # اضافه کردن Rate Limiting و سایر دفاع‌ها
+          cat << 'NGINX_CONF' | sudo tee /etc/nginx/sites-enabled/fortress
+          limit_req_zone $binary_remote_addr zone=attackzone:10m rate=5r/s;
+
+          server {
+              listen 8080;
+              ModSecurityEnabled on;
+              ModSecurityConfig /etc/nginx/modsec/main.conf;
+
+              location / {
+                  limit_req zone=attackzone burst=20 nodelay;
+                  root /var/www/html;
+                  index index.html;
+              }
+          }
+          NGINX_CONF
+
+          # ساخت صفحه
+          sudo mkdir -p /var/www/html
+          sudo tee /var/www/html/index.html << 'HTML'
+          <h1>🏰 Fortress is alive!</h1>
+          HTML
+
+          sudo systemctl restart nginx
+
+      - name: 🚀 اجرای قلعه
         run: |
-          cat > index.html << 'EOF'
-          <!DOCTYPE html>
-          <html>
-          <head><title>Test Target</title></head>
-          <body style="background:#111;color:#0f0;font-family:monospace;display:flex;justify-content:center;align-items:center;height:100vh;">
-              <h1>🟢 Server is alive</h1>
-          </body>
-          </html>
-          EOF
-
-          cat > server.py << 'PYEOF'
-          import http.server
-          import socketserver
-          import os, subprocess, threading, time
-          from datetime import datetime
-
-          LOG_FILE = "visitor_log.txt"
-
-          class LoggingHandler(http.server.SimpleHTTPRequestHandler):
-              def log_request(self, code='-', size='-'):
-                  pass  # کم کردن شلوغی لاگ
-
-              def do_GET(self):
-                  # ثبت درخواست با اطلاعات کامل
-                  timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                  ip = self.client_address[0]
-                  ua = self.headers.get('User-Agent', 'unknown')
-                  ref = self.headers.get('Referer', 'direct')
-                  log_line = f"[{timestamp}] {ip} | {ua[:80]} | Referer: {ref} | Path: {self.path}\n"
-                  with open(LOG_FILE, 'a') as f:
-                      f.write(log_line)
-                  print(f"📥 {ip} - {self.path}", flush=True)
-                  super().do_GET()
-
-          class LogPusher(threading.Thread):
-              def run(self):
-                  while True:
-                      time.sleep(300)  # هر ۵ دقیقه
-                      try:
-                          subprocess.run(['git', 'add', LOG_FILE], check=True)
-                          subprocess.run(['git', 'commit', '-m', 'Auto-update visitor log'], check=True)
-                          subprocess.run(['git', 'pull', '--rebase'], check=True)
-                          subprocess.run(['git', 'push'], check=True)
-                          print("📤 لاگ با موفقیت به مخزن ارسال شد.")
-                      except Exception as e:
-                          print(f"⚠️ Push ناموفق: {e}")
-
-          PORT = 8080
-          with socketserver.TCPServer(("0.0.0.0", PORT), LoggingHandler) as httpd:
-              print(f"🌐 سرور روی پورت {PORT} آماده است.")
-              pusher = LogPusher(daemon=True)
-              pusher.start()
-              httpd.serve_forever()
-          PYEOF
-
-      - name: راه‌اندازی سرور و تونل
-        run: |
-          python3 server.py &
-          sleep 1
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           ./cloudflared tunnel --url http://localhost:8080 2>&1 | tee /tmp/cf-log &
-          sleep 12
+          sleep 15
           URL=$(grep -oP 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cf-log | head -n 1)
-          echo "🌐 **سرور هدف شما:**"
-          echo "   $URL"
-          echo "⏱️ این سرور تا ۶ ساعت آنلاین می‌ماند."
-          echo "📊 لاگ بازدیدها در visitor_log.txt ثبت می‌شود."
+          echo "🏰 قلعه مستحکم شما: $URL"
           sleep 21600
-
-      - name: ذخیره نهایی لاگ
-        run: |
-          echo "📊 گزارش نهایی بازدیدها:"
-          if [ -f visitor_log.txt ]; then
-            wc -l visitor_log.txt
-            tail -20 visitor_log.txt
-            git add visitor_log.txt
-            git commit -m "Final visitor log" || true
-            git push || true
-          else
-            echo "هیچ بازدیدی ثبت نشد."
-          fi
