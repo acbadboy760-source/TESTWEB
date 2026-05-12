@@ -1,0 +1,87 @@
+name: Temporary Test Site with Visitor Log
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  serve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: دریافت مخزن
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: تنظیمات Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: ساخت صفحه وب و اسکریپت سرور
+        run: |
+          cat > index.html << 'HTMLEOF'
+          <!DOCTYPE html>
+          <html>
+          <head><title>Test Target</title></head>
+          <body style="background:#111;color:#0f0;font-family:monospace;display:flex;justify-content:center;align-items:center;height:100vh;">
+              <h1>🟢 Server is alive</h1>
+          </body>
+          </html>
+          HTMLEOF
+
+          cat > server.py << 'PYEOF'
+          import http.server
+          import socketserver
+          import os, subprocess, threading, time
+          from datetime import datetime
+
+          LOG_FILE = "visitor_log.txt"
+
+          class LoggingHandler(http.server.SimpleHTTPRequestHandler):
+              def log_request(self, code='-', size='-'):
+                  pass  # کاهش شلوغی لاگ
+
+              def do_GET(self):
+                  log_entry = f"[{datetime.now().isoformat()}] {self.client_address[0]} - {self.path} - {self.headers.get('User-Agent', 'unknown')}\n"
+                  with open(LOG_FILE, 'a') as f:
+                      f.write(log_entry)
+                  super().do_GET()
+
+          class PushThread(threading.Thread):
+              def run(self):
+                  while True:
+                      time.sleep(300)  # هر ۵ دقیقه
+                      try:
+                          subprocess.run(['git', 'add', LOG_FILE], check=True)
+                          subprocess.run(['git', 'commit', '-m', 'Auto update visitor log'], check=True)
+                          subprocess.run(['git', 'pull', '--rebase'], check=True)
+                          subprocess.run(['git', 'push'], check=True)
+                          print("📤 لاگ با موفقیت به مخزن ارسال شد.")
+                      except Exception as e:
+                          print(f"⚠️ Push ناموفق: {e}")
+
+          PORT = 8080
+          with socketserver.TCPServer(("0.0.0.0", PORT), LoggingHandler) as httpd:
+              print(f"🌐 سرور روی پورت {PORT} آماده است.")
+              pusher = PushThread(daemon=True)
+              pusher.start()
+              httpd.serve_forever()
+          PYEOF
+
+      - name: نصب cloudflared و راه‌اندازی تونل
+        run: |
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          python3 server.py &
+          sleep 2
+          ./cloudflared tunnel --url http://localhost:8080 2>&1 | tee /tmp/cf-log &
+          sleep 12
+          URL=$(grep -oP 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cf-log | head -n 1)
+          echo "🌐 **سایت موقت شما آماده است:**"
+          echo "   $URL"
+          echo "⏱️ این سایت تا ۶ ساعت آینده آنلاین خواهد ماند."
+          echo "📊 لاگ بازدیدها در فایل visitor_log.txt ذخیره می‌شود."
+          sleep 21600  # ۶ ساعت آنلاین بماند
