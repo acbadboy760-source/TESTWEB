@@ -1,0 +1,32 @@
+name: Temporary Test Target Site
+
+on:
+  workflow_dispatch:
+
+jobs:
+  serve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ساخت صفحه ساده
+        run: |
+          cat > index.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head><title>Test Target</title></head>
+          <body style="background:#111;color:#0f0;font-family:monospace;display:flex;justify-content:center;align-items:center;height:100vh;">
+              <h1>🟢 Server is alive</h1>
+          </body>
+          </html>
+          EOF
+
+      - name: راه‌اندازی وب‌سرور و تونل
+        run: |
+          python3 -m http.server 8080 &
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          ./cloudflared tunnel --url http://localhost:8080 2>&1 | tee /tmp/cf-log &
+          sleep 12
+          URL=$(grep -oP 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cf-log | head -n 1)
+          echo "🌐 سایت موقت شما: $URL"
+          echo "تا ۶ ساعت آنلاین می‌ماند."
+          sleep 21600  # ۶ ساعت
