@@ -1,4 +1,4 @@
-name: Fortress L7 - Hardened Nginx Target
+name: Public Site with Visitor Log (10s push)
 
 on:
   workflow_dispatch:
@@ -7,80 +7,87 @@ permissions:
   contents: write
 
 jobs:
-  fortress:
+  server:
     runs-on: ubuntu-latest
     steps:
-      - name: دریافت مخزن
+      - name: 📥 دریافت مخزن
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: تنظیمات Git
+      - name: ⚙️ تنظیمات Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: ساخت قلعه Nginx
+      - name: 🌐 ساخت سرور لاگ‌گیر و سایت
         run: |
-          sudo apt-get update
-          sudo apt-get install -y nginx
+          cat > server.py << 'PYEOF'
+          import http.server
+          import socketserver
+          import os, subprocess, threading, time
+          from datetime import datetime
 
-          # صفحه تست
-          sudo mkdir -p /var/www/html
-          echo '<h1>🏰 Fortress is alive!</h1>' | sudo tee /var/www/html/index.html
+          LOG_FILE = "visitor_log.txt"
 
-          # کانفیگ سختگیرانه Nginx
-          sudo tee /etc/nginx/sites-enabled/fortress << 'NGINX'
-          # Rate Limiting: حداکثر ۱۰ درخواست در ثانیه، با burst ۲۰ تایی
-          limit_req_zone $binary_remote_addr zone=ddos:10m rate=10r/s;
-          # Connection Limiting: حداکثر ۲۰ کانکشن هم‌زمان از هر IP
-          limit_conn_zone $binary_remote_addr zone=connlimit:10m;
+          HTML_PAGE = """<!DOCTYPE html>
+          <html>
+          <head><title>Test Target</title></head>
+          <body style="background:#111;color:#0f0;font-family:monospace;display:flex;justify-content:center;align-items:center;height:100vh;">
+              <h1>🟢 Server is alive</h1>
+          </body>
+          </html>"""
 
-          server {
-              listen 8080 default_server;
+          class LoggingHandler(http.server.BaseHTTPRequestHandler):
+              def log_message(self, format, *args):
+                  pass  # سایلنت
 
-              # محدودیت‌های اصلی
-              limit_req zone=ddos burst=20 nodelay;
-              limit_conn connlimit 20;
+              def do_GET(self):
+                  timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                  ip = self.client_address[0]
+                  ua = self.headers.get('User-Agent', 'unknown')
+                  ref = self.headers.get('Referer', 'direct')
+                  log_line = f"[{timestamp}] {ip} | {ua[:80]} | Referer: {ref} | Path: {self.path}\n"
+                  with open(LOG_FILE, 'a') as f:
+                      f.write(log_line)
+                  print(f"📥 {ip} - {self.path}", flush=True)
 
-              # Timeoutهای کوتاه برای کشتن Slowloris و RUDY
-              client_body_timeout 5s;
-              client_header_timeout 5s;
-              keepalive_timeout 5s;
-              send_timeout 5s;
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/html')
+                  self.end_headers()
+                  self.wfile.write(HTML_PAGE.encode())
 
-              # محدودیت حجم هدر و بادی
-              client_body_buffer_size 10k;
-              client_header_buffer_size 1k;
-              client_max_body_size 10k;
-              large_client_header_buffers 2 1k;
+          class LogPusher(threading.Thread):
+              def run(self):
+                  while True:
+                      time.sleep(10)  # هر ۱۰ ثانیه
+                      try:
+                          subprocess.run(['git', 'add', LOG_FILE], check=True)
+                          subprocess.run(['git', 'commit', '-m', 'Auto-update visitor log (10s)'], check=True)
+                          subprocess.run(['git', 'pull', '--rebase'], check=True)
+                          subprocess.run(['git', 'push'], check=True)
+                          print("📤 لاگ با موفقیت به مخزن ارسال شد.")
+                      except Exception as e:
+                          print(f"⚠️ Push ناموفق: {e}")
 
-              # مسدود کردن User-Agentهای مشکوک (اختیاری)
-              if ($http_user_agent ~* (python|curl|wget|scrapy|nikto|sqlmap)) {
-                  return 403;
-              }
+          PORT = 8080
+          with socketserver.TCPServer(("0.0.0.0", PORT), LoggingHandler) as httpd:
+              print(f"🌐 سرور روی پورت {PORT} آماده است.")
+              pusher = LogPusher(daemon=True)
+              pusher.start()
+              httpd.serve_forever()
+          PYEOF
 
-              location / {
-                  root /var/www/html;
-                  index index.html;
-              }
-          }
-          NGINX
-
-          sudo rm /etc/nginx/sites-enabled/default
-          sudo systemctl restart nginx
-
-      - name: نصب cloudflared
+      - name: 🚀 راه‌اندازی تونل و شروع سرور
         run: |
+          python3 server.py &
+          sleep 1
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
-
-      - name: راه‌اندازی قلعه و تونل
-        run: |
           ./cloudflared tunnel --url http://localhost:8080 2>&1 | tee /tmp/cf-log &
           sleep 12
           URL=$(grep -oP 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cf-log | head -n 1)
-          echo "🏰 قلعه مستحکم شما: $URL"
-          echo "🛡️ این سرور دارای Rate Limiting و Connection Limiting است."
-          echo "⏱️ تا ۶ ساعت آنلاین می‌ماند."
+          echo "🌐 **لینک عمومی سایت:** $URL"
+          echo "📊 لاگ بازدیدها در فایل visitor_log.txt ذخیره می‌شود."
+          echo "⏱️ سرور تا ۶ ساعت آنلاین می‌ماند."
           sleep 21600
