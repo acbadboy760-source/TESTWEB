@@ -1,0 +1,92 @@
+name: Simple Server + Visitor Log + RAM Monitor
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:   # بتونی دستی هم اجراش کنی
+
+jobs:
+  run-server-and-log:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360   # تا ۶ ساعت می‌تونه ادامه بده
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Create simple HTTP server script
+        run: |
+          cat > server.py << 'EOF'
+          import http.server
+          import socketserver
+          import datetime
+          import os
+
+          PORT = 8000
+          LOG_FILE = "visitors.txt"
+
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header("Content-type", "text/plain")
+                  self.end_headers()
+                  self.wfile.write(b"TEST")
+                  client_ip = self.client_address[0]
+                  now = datetime.datetime.now().isoformat()
+                  with open(LOG_FILE, "a") as f:
+                      f.write(f"{client_ip} - {now}\n")
+
+              def log_message(self, format, *args):
+                  return   # لاگ پیش‌فرض رو خاموش می‌کنیم
+
+          with socketserver.ThreadingTCPServer(("0.0.0.0", PORT), Handler) as httpd:
+              print(f"Server running on port {PORT}")
+              httpd.serve_forever()
+          EOF
+
+      - name: Start server in background
+        run: |
+          nohup python3 server.py &
+          echo "SERVER_PID=$!" >> $GITHUB_ENV
+          sleep 2
+
+      - name: Show server process RAM at start
+        run: |
+          echo "Initial RAM usage of server:"
+          ps -o pid,rss,comm -p $SERVER_PID --no-headers || true
+
+      - name: Simulate 150,000 visitors (no protection)
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y apache2-utils
+          # 150 هزار درخواست بدون هیچ تأخیری با ۵۰ اتصال هم‌زمان
+          seq 1 150000 | xargs -P 50 -I {} curl -s http://localhost:8000/ > /dev/null
+          echo "All 150k requests sent!"
+
+      - name: Monitor, commit logs every 1 minute and show RAM
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          while true; do
+            sleep 60
+            echo "=== Minute update ==="
+            echo "Current visitor entries: $(wc -l < visitors.txt 2>/dev/null || echo 0)"
+            echo "RAM usage (free):"
+            free -h
+            echo "Server process RAM:"
+            ps -o pid,rss,comm -p $SERVER_PID --no-headers || true
+
+            # کامیت و پوش اگر فایل visitor.txt تغییر کرده باشه
+            if ! git diff --quiet visitors.txt; then
+              git add visitors.txt
+              git commit -m "Update visitor log: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+              git push
+            else
+              echo "No new visitors this minute."
+            fi
+          done
