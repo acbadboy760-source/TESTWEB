@@ -1,4 +1,4 @@
-name: Temporary Test Site with Visitor Log
+name: Temporary Target Server with Visitor Log
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 jobs:
-  serve:
+  server:
     runs-on: ubuntu-latest
     steps:
       - name: دریافت مخزن
@@ -20,9 +20,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: ساخت صفحه وب و اسکریپت سرور
+      - name: ساخت صفحه هدف و سرور پیشرفته
         run: |
-          cat > index.html << 'HTMLEOF'
+          cat > index.html << 'EOF'
           <!DOCTYPE html>
           <html>
           <head><title>Test Target</title></head>
@@ -30,7 +30,7 @@ jobs:
               <h1>🟢 Server is alive</h1>
           </body>
           </html>
-          HTMLEOF
+          EOF
 
           cat > server.py << 'PYEOF'
           import http.server
@@ -42,21 +42,27 @@ jobs:
 
           class LoggingHandler(http.server.SimpleHTTPRequestHandler):
               def log_request(self, code='-', size='-'):
-                  pass  # کاهش شلوغی لاگ
+                  pass  # کم کردن شلوغی لاگ
 
               def do_GET(self):
-                  log_entry = f"[{datetime.now().isoformat()}] {self.client_address[0]} - {self.path} - {self.headers.get('User-Agent', 'unknown')}\n"
+                  # ثبت درخواست با اطلاعات کامل
+                  timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                  ip = self.client_address[0]
+                  ua = self.headers.get('User-Agent', 'unknown')
+                  ref = self.headers.get('Referer', 'direct')
+                  log_line = f"[{timestamp}] {ip} | {ua[:80]} | Referer: {ref} | Path: {self.path}\n"
                   with open(LOG_FILE, 'a') as f:
-                      f.write(log_entry)
+                      f.write(log_line)
+                  print(f"📥 {ip} - {self.path}", flush=True)
                   super().do_GET()
 
-          class PushThread(threading.Thread):
+          class LogPusher(threading.Thread):
               def run(self):
                   while True:
                       time.sleep(300)  # هر ۵ دقیقه
                       try:
                           subprocess.run(['git', 'add', LOG_FILE], check=True)
-                          subprocess.run(['git', 'commit', '-m', 'Auto update visitor log'], check=True)
+                          subprocess.run(['git', 'commit', '-m', 'Auto-update visitor log'], check=True)
                           subprocess.run(['git', 'pull', '--rebase'], check=True)
                           subprocess.run(['git', 'push'], check=True)
                           print("📤 لاگ با موفقیت به مخزن ارسال شد.")
@@ -66,22 +72,35 @@ jobs:
           PORT = 8080
           with socketserver.TCPServer(("0.0.0.0", PORT), LoggingHandler) as httpd:
               print(f"🌐 سرور روی پورت {PORT} آماده است.")
-              pusher = PushThread(daemon=True)
+              pusher = LogPusher(daemon=True)
               pusher.start()
               httpd.serve_forever()
           PYEOF
 
-      - name: نصب cloudflared و راه‌اندازی تونل
+      - name: راه‌اندازی سرور و تونل
         run: |
+          python3 server.py &
+          sleep 1
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
-          python3 server.py &
-          sleep 2
           ./cloudflared tunnel --url http://localhost:8080 2>&1 | tee /tmp/cf-log &
           sleep 12
           URL=$(grep -oP 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cf-log | head -n 1)
-          echo "🌐 **سایت موقت شما آماده است:**"
+          echo "🌐 **سرور هدف شما:**"
           echo "   $URL"
-          echo "⏱️ این سایت تا ۶ ساعت آینده آنلاین خواهد ماند."
-          echo "📊 لاگ بازدیدها در فایل visitor_log.txt ذخیره می‌شود."
-          sleep 21600  # ۶ ساعت آنلاین بماند
+          echo "⏱️ این سرور تا ۶ ساعت آنلاین می‌ماند."
+          echo "📊 لاگ بازدیدها در visitor_log.txt ثبت می‌شود."
+          sleep 21600
+
+      - name: ذخیره نهایی لاگ
+        run: |
+          echo "📊 گزارش نهایی بازدیدها:"
+          if [ -f visitor_log.txt ]; then
+            wc -l visitor_log.txt
+            tail -20 visitor_log.txt
+            git add visitor_log.txt
+            git commit -m "Final visitor log" || true
+            git push || true
+          else
+            echo "هیچ بازدیدی ثبت نشد."
+          fi
