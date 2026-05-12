@@ -15,10 +15,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: ⚙️ تنظیمات Git
+      - name: ⚙️ تنظیمات Git و ایجاد فایل لاگ اولیه
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # ایجاد فایل لاگ خالی (اگه وجود نداره) و کامیت اولیه
+          if [ ! -f visitor_log.txt ]; then
+            echo "📅 فایل لاگ بازدیدها - ایجاد شده در $(date)" > visitor_log.txt
+            git add visitor_log.txt
+            git commit -m "ایجاد فایل لاگ اولیه" || true
+            git push || true
+          fi
 
       - name: 🌐 ساخت سرور لاگ‌گیر و سایت
         run: |
@@ -40,7 +48,7 @@ jobs:
 
           class LoggingHandler(http.server.BaseHTTPRequestHandler):
               def log_message(self, format, *args):
-                  pass  # سایلنت
+                  pass
 
               def do_GET(self):
                   timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -48,6 +56,8 @@ jobs:
                   ua = self.headers.get('User-Agent', 'unknown')
                   ref = self.headers.get('Referer', 'direct')
                   log_line = f"[{timestamp}] {ip} | {ua[:80]} | Referer: {ref} | Path: {self.path}\n"
+                  
+                  # نوشتن لاگ (فایل حتماً وجود دارد چون در مرحله قبل ایجاد شده)
                   with open(LOG_FILE, 'a') as f:
                       f.write(log_line)
                   print(f"📥 {ip} - {self.path}", flush=True)
@@ -59,20 +69,23 @@ jobs:
 
           class LogPusher(threading.Thread):
               def run(self):
+                  # یک sleep اولیه برای اینکه فایل حتماً آماده باشد
+                  time.sleep(10)
                   while True:
-                      time.sleep(10)  # هر ۱۰ ثانیه
                       try:
-                          subprocess.run(['git', 'add', LOG_FILE], check=True)
-                          subprocess.run(['git', 'commit', '-m', 'Auto-update visitor log (10s)'], check=True)
-                          subprocess.run(['git', 'pull', '--rebase'], check=True)
-                          subprocess.run(['git', 'push'], check=True)
-                          print("📤 لاگ با موفقیت به مخزن ارسال شد.")
+                          if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 0:
+                              subprocess.run(['git', 'add', LOG_FILE], check=True)
+                              subprocess.run(['git', 'commit', '-m', 'Auto-update visitor log (10s)'], check=True)
+                              subprocess.run(['git', 'pull', '--rebase'], check=True)
+                              subprocess.run(['git', 'push'], check=True)
+                              print("📤 لاگ با موفقیت به مخزن ارسال شد.")
                       except Exception as e:
-                          print(f"⚠️ Push ناموفق: {e}")
+                          print(f"⚠️ خطا در push (نادیده گرفته شد): {e}")
+                      time.sleep(10)
 
           PORT = 8080
           with socketserver.TCPServer(("0.0.0.0", PORT), LoggingHandler) as httpd:
-              print(f"🌐 سرور روی پورت {PORT} آماده است.")
+              print(f"🌐 سرور روی پورت {PORT} آماده است")
               pusher = LogPusher(daemon=True)
               pusher.start()
               httpd.serve_forever()
