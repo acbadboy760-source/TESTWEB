@@ -130,11 +130,12 @@ jobs:
               httpd.serve_forever()
           EOF
 
-      - name: Increase system limits
+      - name: Increase system limits (no OS bottlenecks)
         run: |
           ulimit -n 65536
-          ulimit -u 65536
+          ulimit -u 65536 || true   # اگر اجازه نداشت، بی‌خیال شو
           echo "ulimit -n $(ulimit -n)"
+          echo "ulimit -u $(ulimit -u)" || true
 
       - name: Start server
         run: |
