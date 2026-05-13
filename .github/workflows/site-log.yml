@@ -1,92 +1,191 @@
-name: Simple Server + Visitor Log + RAM Monitor
+name: God-Level Protection + Active Visitors + Log + Tunnel
 
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:   # بتونی دستی هم اجراش کنی
+  workflow_dispatch:
 
 jobs:
-  run-server-and-log:
+  run:
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # تا ۶ ساعت می‌تونه ادامه بده
+    timeout-minutes: 360
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Create simple HTTP server script
+      - name: Create fortress server with active IP tracking
         run: |
           cat > server.py << 'EOF'
           import http.server
           import socketserver
+          import threading
+          import time
           import datetime
+          from collections import defaultdict
           import os
 
           PORT = 8000
           LOG_FILE = "visitors.txt"
+          ACTIVE_FILE = "active.txt"
 
-          class Handler(http.server.BaseHTTPRequestHandler):
+          class RateLimiter:
+              def __init__(self):
+                  self.lock = threading.Lock()
+                  self.buckets = defaultdict(lambda: {"tokens": 3, "last": time.monotonic()})
+                  self.ban_list = {}
+
+              def is_allowed(self, ip):
+                  now = time.monotonic()
+                  with self.lock:
+                      if ip in self.ban_list:
+                          if now < self.ban_list[ip]:
+                              return False
+                          else:
+                              del self.ban_list[ip]
+                      bucket = self.buckets[ip]
+                      elapsed = now - bucket["last"]
+                      bucket["tokens"] = min(3, bucket["tokens"] + elapsed * 1)
+                      bucket["last"] = now
+                      if bucket["tokens"] >= 1:
+                          bucket["tokens"] -= 1
+                          return True
+                      else:
+                          abuse_key = f"abuse_{ip}"
+                          self.buckets[abuse_key]["count"] = self.buckets[abuse_key].get("count", 0) + 1
+                          if self.buckets[abuse_key]["count"] >= 10:
+                              self.ban_list[ip] = now + 300
+                              print(f"🔥 BANNED IP {ip} for 5 min")
+                          return False
+
+          limiter = RateLimiter()
+
+          # Active IP tracking
+          active_lock = threading.Lock()
+          active_ips = {}  # ip -> last_seen timestamp
+
+          class ProtectedHandler(http.server.BaseHTTPRequestHandler):
               def do_GET(self):
+                  real_ip = self.headers.get("CF-Connecting-IP")
+                  if not real_ip:
+                      real_ip = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+                  if not real_ip:
+                      real_ip = self.client_address[0]
+
+                  # Bypass all limits for localhost (stress test)
+                  if real_ip == "127.0.0.1" or real_ip.startswith("::1"):
+                      client_ip = real_ip
+                  else:
+                      if not limiter.is_allowed(real_ip):
+                          self.send_response(429)
+                          self.send_header("Content-type", "text/plain")
+                          self.end_headers()
+                          self.wfile.write(b"Too Many Requests - You are rate limited or banned.")
+                          return
+                      client_ip = real_ip
+
                   self.send_response(200)
                   self.send_header("Content-type", "text/plain")
                   self.end_headers()
                   self.wfile.write(b"TEST")
-                  client_ip = self.client_address[0]
-                  now = datetime.datetime.now().isoformat()
+
+                  # Log to visitors.txt
+                  now_iso = datetime.datetime.now().isoformat()
                   with open(LOG_FILE, "a") as f:
-                      f.write(f"{client_ip} - {now}\n")
+                      f.write(f"{client_ip} - {now_iso}\n")
+
+                  # Update active IPs
+                  with active_lock:
+                      active_ips[client_ip] = time.time()
 
               def log_message(self, format, *args):
-                  return   # لاگ پیش‌فرض رو خاموش می‌کنیم
+                  return
 
-          with socketserver.ThreadingTCPServer(("0.0.0.0", PORT), Handler) as httpd:
-              print(f"Server running on port {PORT}")
+          # Background writer for active.txt
+          def update_active_file():
+              while True:
+                  time.sleep(30)
+                  now = time.time()
+                  with active_lock:
+                      # Remove IPs inactive > 60 sec
+                      stale = [ip for ip, t in active_ips.items() if now - t > 60]
+                      for ip in stale:
+                          del active_ips[ip]
+                      # Write to file
+                      with open(ACTIVE_FILE, "w") as f:
+                          for ip in sorted(active_ips.keys()):
+                              f.write(ip + "\n")
+                  print(f"🟢 Active IPs updated: {len(active_ips)} currently online.")
+
+          threading.Thread(target=update_active_file, daemon=True).start()
+
+          class FortressServer(socketserver.ThreadingTCPServer):
+              allow_reuse_address = True
+              request_queue_size = 100000
+
+          with FortressServer(("0.0.0.0", PORT), ProtectedHandler) as httpd:
+              print(f"Fortress server running on port {PORT}")
               httpd.serve_forever()
           EOF
 
-      - name: Start server in background
+      - name: Increase system limits
+        run: |
+          ulimit -n 65536
+          ulimit -u 65536
+          echo "ulimit -n $(ulimit -n)"
+
+      - name: Start server
         run: |
           nohup python3 server.py &
           echo "SERVER_PID=$!" >> $GITHUB_ENV
           sleep 2
 
-      - name: Show server process RAM at start
+      - name: Install cloudflared and expose
         run: |
-          echo "Initial RAM usage of server:"
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/
+          cloudflared tunnel --url http://localhost:8000 > tunnel.log 2>&1 &
+          echo "TUNNEL_PID=$!" >> $GITHUB_ENV
+          sleep 5
+          PUBLIC_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -n1)
+          echo "🌐 Public URL: $PUBLIC_URL"
+          echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
+
+      - name: Show initial RAM
+        run: |
+          echo "Server process RAM:"
           ps -o pid,rss,comm -p $SERVER_PID --no-headers || true
+          free -h | grep Mem
 
-      - name: Simulate 150,000 visitors (no protection)
+      - name: Stress-test 150k local requests (bypass protection)
         run: |
-          sudo apt-get update -y && sudo apt-get install -y apache2-utils
-          # 150 هزار درخواست بدون هیچ تأخیری با ۵۰ اتصال هم‌زمان
-          seq 1 150000 | xargs -P 50 -I {} curl -s http://localhost:8000/ > /dev/null
-          echo "All 150k requests sent!"
+          sudo apt-get update -y && sudo apt-get install -y curl
+          seq 1 150000 | xargs -P 100 -I {} curl -s http://localhost:8000/ > /dev/null
+          echo "✅ 150k local requests done"
 
-      - name: Monitor, commit logs every 1 minute and show RAM
+      - name: Log every 1 min (visitors + active + RAM) and commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           while true; do
             sleep 60
-            echo "=== Minute update ==="
-            echo "Current visitor entries: $(wc -l < visitors.txt 2>/dev/null || echo 0)"
-            echo "RAM usage (free):"
-            free -h
-            echo "Server process RAM:"
-            ps -o pid,rss,comm -p $SERVER_PID --no-headers || true
-
-            # کامیت و پوش اگر فایل visitor.txt تغییر کرده باشه
-            if ! git diff --quiet visitors.txt; then
-              git add visitors.txt
-              git commit -m "Update visitor log: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
-              git push
+            echo "⏰ === Minute Update ==="
+            echo "📋 Total visitors logged: $(wc -l < visitors.txt 2>/dev/null || echo 0)"
+            if [ -f active.txt ]; then
+              echo "👥 Currently active IPs: $(wc -l < active.txt 2>/dev/null || echo 0)"
+              echo "   Active IPs list:"
+              cat active.txt 2>/dev/null || true
             else
-              echo "No new visitors this minute."
+              echo "👥 No active file yet."
             fi
+            echo "💾 System RAM:"
+            free -h | grep Mem
+            echo "🐍 Server RAM:"
+            ps -o pid,rss,comm -p $SERVER_PID --no-headers || true
+            git add visitors.txt active.txt 2>/dev/null
+            git commit -m "Update logs $(date -u +'%Y-%m-%d %H:%M:%S UTC')" || echo "No changes to commit"
+            git push
           done
