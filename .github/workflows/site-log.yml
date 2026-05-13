@@ -1,4 +1,4 @@
-name: God-Level Protection + Active Visitors + Log + Tunnel
+name: Site Search + Visitor Countries + Active List + Log
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Create fortress server with active IP tracking
+      - name: Create enhanced server (search + visitor countries)
         run: |
           cat > server.py << 'EOF'
           import http.server
@@ -24,12 +24,18 @@ jobs:
           import threading
           import time
           import datetime
+          import socket
+          import urllib.parse
+          import json
           from collections import defaultdict
           import os
+          import requests
 
           PORT = 8000
           LOG_FILE = "visitors.txt"
           ACTIVE_FILE = "active.txt"
+          IP_API = "http://ip-api.com/json/{}?fields=country,countryCode,query"
+          GEO_CACHE = {}  # ip -> country name
 
           class RateLimiter:
               def __init__(self):
@@ -61,12 +67,27 @@ jobs:
                           return False
 
           limiter = RateLimiter()
-
-          # Active IP tracking
           active_lock = threading.Lock()
-          active_ips = {}  # ip -> last_seen timestamp
+          active_ips = {}  # ip -> (last_seen, country)
 
-          class ProtectedHandler(http.server.BaseHTTPRequestHandler):
+          def get_country(ip):
+              """Return country name for IP (with cache)."""
+              if ip in GEO_CACHE:
+                  return GEO_CACHE[ip]
+              try:
+                  resp = requests.get(IP_API.format(ip), timeout=2)
+                  if resp.status_code == 200:
+                      data = resp.json()
+                      if data.get("status") == "success":
+                          country = data.get("country", "Unknown")
+                          GEO_CACHE[ip] = country
+                          return country
+              except:
+                  pass
+              GEO_CACHE[ip] = "Unknown"
+              return "Unknown"
+
+          class Handler(http.server.BaseHTTPRequestHandler):
               def do_GET(self):
                   real_ip = self.headers.get("CF-Connecting-IP")
                   if not real_ip:
@@ -74,49 +95,109 @@ jobs:
                   if not real_ip:
                       real_ip = self.client_address[0]
 
-                  # Bypass all limits for localhost (stress test)
-                  if real_ip == "127.0.0.1" or real_ip.startswith("::1"):
-                      client_ip = real_ip
-                  else:
+                  # Rate‑limit only external IPs
+                  if real_ip not in ("127.0.0.1", "::1"):
                       if not limiter.is_allowed(real_ip):
                           self.send_response(429)
                           self.send_header("Content-type", "text/plain")
                           self.end_headers()
                           self.wfile.write(b"Too Many Requests - You are rate limited or banned.")
                           return
-                      client_ip = real_ip
 
-                  self.send_response(200)
-                  self.send_header("Content-type", "text/plain")
-                  self.end_headers()
-                  self.wfile.write(b"TEST")
+                  # Process query
+                  parsed = urllib.parse.urlparse(self.path)
+                  path = parsed.path
+                  query = urllib.parse.parse_qs(parsed.query)
 
-                  # Log to visitors.txt
-                  now_iso = datetime.datetime.now().isoformat()
-                  with open(LOG_FILE, "a") as f:
-                      f.write(f"{client_ip} - {now_iso}\n")
+                  # Root page (with search + visitor info)
+                  if path == "/":
+                      self.send_response(200)
+                      self.send_header("Content-type", "text/html; charset=utf-8")
+                      self.end_headers()
 
-                  # Update active IPs
-                  with active_lock:
-                      active_ips[client_ip] = time.time()
+                      # Generate HTML
+                      url_param = query.get("url", [""])[0].strip()
+                      result_html = ""
+                      if url_param:
+                          try:
+                              # Resolve host to IP
+                              host = url_param
+                              if "://" in host:
+                                  host = host.split("://")[1].split("/")[0]
+                              else:
+                                  host = host.split("/")[0]
+                              ip = socket.gethostbyname(host)
+                              country = get_country(ip)
+                              result_html = f"<p>🌐 <b>{host}</b> → IP: {ip} → 🇸‌🇹 Country: <b>{country}</b></p>"
+                          except Exception as e:
+                              result_html = f"<p>❌ Could not resolve <b>{url_param}</b>: {e}</p>"
+
+                      # Active visitors list
+                      active_list = ""
+                      with active_lock:
+                          now = time.time()
+                          # Remove stale >60s
+                          stale = [ip for ip, (t, _) in active_ips.items() if now - t > 60]
+                          for ip in stale:
+                              del active_ips[ip]
+                          if active_ips:
+                              active_list = "<ul>"
+                              for ip, (_, country) in sorted(active_ips.items()):
+                                  active_list += f"<li>{ip} - {country}</li>"
+                              active_list += "</ul>"
+                          else:
+                              active_list = "<p>No visitors online.</p>"
+
+                      html = f"""<!DOCTYPE html>
+          <html>
+          <head><title>Site Search & Visitor Map</title></head>
+          <body>
+              <h1>🔍 Search a website to see its host country</h1>
+              <form method="get">
+                  <input name="url" placeholder="e.g. google.com" value="{url_param}">
+                  <button type="submit">Lookup</button>
+              </form>
+              {result_html}
+              <hr>
+              <h2>👥 Visitors online ({len(active_ips)}):</h2>
+              {active_list}
+          </body>
+          </html>"""
+                      self.wfile.write(html.encode())
+
+                  else:
+                      # Any other path -> 404
+                      self.send_response(404)
+                      self.send_header("Content-type", "text/plain")
+                      self.end_headers()
+                      self.wfile.write(b"Not found")
+
+                  # Log visitor and update active IPs (only external IPs)
+                  if real_ip not in ("127.0.0.1", "::1"):
+                      now_iso = datetime.datetime.now().isoformat()
+                      country = get_country(real_ip)
+                      with open(LOG_FILE, "a") as f:
+                          f.write(f"{real_ip} ({country}) - {now_iso}\n")
+
+                      with active_lock:
+                          active_ips[real_ip] = (time.time(), country)
 
               def log_message(self, format, *args):
                   return
 
-          # Background writer for active.txt
+          # Background writer for active.txt (IP Country)
           def update_active_file():
               while True:
                   time.sleep(30)
                   now = time.time()
                   with active_lock:
-                      # Remove IPs inactive > 60 sec
-                      stale = [ip for ip, t in active_ips.items() if now - t > 60]
+                      stale = [ip for ip, (t, _) in active_ips.items() if now - t > 60]
                       for ip in stale:
                           del active_ips[ip]
-                      # Write to file
                       with open(ACTIVE_FILE, "w") as f:
                           for ip in sorted(active_ips.keys()):
-                              f.write(ip + "\n")
+                              _, country = active_ips[ip]
+                              f.write(f"{ip} {country}\n")
                   print(f"🟢 Active IPs updated: {len(active_ips)} currently online.")
 
           threading.Thread(target=update_active_file, daemon=True).start()
@@ -125,17 +206,16 @@ jobs:
               allow_reuse_address = True
               request_queue_size = 100000
 
-          with FortressServer(("0.0.0.0", PORT), ProtectedHandler) as httpd:
-              print(f"Fortress server running on port {PORT}")
+          with FortressServer(("0.0.0.0", PORT), Handler) as httpd:
+              print(f"Enhanced server running on port {PORT}")
               httpd.serve_forever()
           EOF
 
-      - name: Increase system limits (no OS bottlenecks)
+      - name: Increase system limits
         run: |
           ulimit -n 65536
-          ulimit -u 65536 || true   # اگر اجازه نداشت، بی‌خیال شو
+          ulimit -u 65536 || true
           echo "ulimit -n $(ulimit -n)"
-          echo "ulimit -u $(ulimit -u)" || true
 
       - name: Start server
         run: |
@@ -167,7 +247,7 @@ jobs:
           seq 1 150000 | xargs -P 100 -I {} curl -s http://localhost:8000/ > /dev/null
           echo "✅ 150k local requests done"
 
-      - name: Log every 1 min (visitors + active + RAM) and commit
+      - name: Log every 1 min (visitors + active + countries) and commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -177,7 +257,7 @@ jobs:
             echo "📋 Total visitors logged: $(wc -l < visitors.txt 2>/dev/null || echo 0)"
             if [ -f active.txt ]; then
               echo "👥 Currently active IPs: $(wc -l < active.txt 2>/dev/null || echo 0)"
-              echo "   Active IPs list:"
+              echo "   Active IPs (with countries):"
               cat active.txt 2>/dev/null || true
             else
               echo "👥 No active file yet."
@@ -187,6 +267,6 @@ jobs:
             echo "🐍 Server RAM:"
             ps -o pid,rss,comm -p $SERVER_PID --no-headers || true
             git add visitors.txt active.txt 2>/dev/null
-            git commit -m "Update logs $(date -u +'%Y-%m-%d %H:%M:%S UTC')" || echo "No changes to commit"
+            git commit -m "Update logs $(date -u +'%Y-%m-%d %H:%M:%S UTC')" || echo "No changes"
             git push
           done
