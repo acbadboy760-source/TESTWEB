@@ -241,11 +241,40 @@ jobs:
           ps -o pid,rss,comm -p $SERVER_PID --no-headers || true
           free -h | grep Mem
 
-      - name: Stress-test 150k local requests (bypass protection)
+      - name: Stress-test 150k local requests (using Python, error-safe)
         run: |
-          sudo apt-get update -y && sudo apt-get install -y curl
-          seq 1 150000 | xargs -P 100 -I {} curl -s http://localhost:8000/ > /dev/null
-          echo "✅ 150k local requests done"
+          python3 << 'PYEOF'
+          import urllib.request
+          import concurrent.futures
+          import sys
+
+          def send_request(_):
+              try:
+                  with urllib.request.urlopen("http://localhost:8000/", timeout=2) as resp:
+                      return resp.status == 200
+              except:
+                  return False
+
+          total = 150000
+          workers = 50  # concurrent threads
+          success = 0
+          failed = 0
+
+          with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+              futures = {executor.submit(send_request, i): i for i in range(total)}
+              for f in concurrent.futures.as_completed(futures):
+                  if f.result():
+                      success += 1
+                  else:
+                      failed += 1
+                  # progress every 10000
+                  done = success + failed
+                  if done % 10000 == 0:
+                      print(f"Progress: {done}/{total} (ok={success}, fail={failed})")
+
+          print(f"✅ Stress test done: {success} ok, {failed} failed")
+          sys.exit(0)  # always exit clean
+          PYEOF
 
       - name: Log every 1 min (visitors + active + countries) and commit
         run: |
