@@ -1,5 +1,5 @@
 Server Info
-URL: https://garbage-millennium-enjoying-keyword.trycloudflare.com
-Runner IP: 52.188.86.146
+URL: https://mattress-processed-acquire-adam.trycloudflare.com
+Runner IP: 20.119.78.67
 Port: 8080
-Protection: yes
+Protection: no
