@@ -117,18 +117,41 @@ jobs:
         env:
           PROTECTION: ${{ github.event.inputs.protection }}
         run: |
+          # گرفتن IP عمومی رانر
+          RUNNER_IP=$(curl -s ifconfig.me)
+          SERVER_PORT=8080
+          
+          echo "🖥️ IP رانر: $RUNNER_IP"
+          echo "🚪 پورت: $SERVER_PORT"
+          
           python3 server.py &
           sleep 1
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
-          ./cloudflared tunnel --url http://localhost:8080 2>&1 | tee /tmp/cf-log &
+          ./cloudflared tunnel --url http://localhost:${SERVER_PORT} 2>&1 | tee /tmp/cf-log &
           sleep 12
           URL=$(grep -oP 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cf-log | head -n 1)
+          
           echo "🌐 **لینک سایت هدف:** $URL"
+          echo "🖥️ **IP رانر:** $RUNNER_IP"
+          echo "🚪 **پورت:** $SERVER_PORT"
+          
           if [ "$PROTECTION" = "yes" ]; then
             echo "🛡️ محافظت DDoS فعال است (Rate Limit: 20 req/s + 50 burst)."
           else
             echo "⚡ بدون محافظت – تمام درخواست‌ها پذیرفته می‌شوند."
           fi
+          
+          # ذخیره اطلاعات سرور در فایل
+          echo "Server Info" > server_info.txt
+          echo "URL: $URL" >> server_info.txt
+          echo "Runner IP: $RUNNER_IP" >> server_info.txt
+          echo "Port: $SERVER_PORT" >> server_info.txt
+          echo "Protection: $PROTECTION" >> server_info.txt
+          
+          git add server_info.txt
+          git commit -m "Add server info" || true
+          git push || true
+          
           echo "⏱️ سرور تا ۶ ساعت آنلاین می‌ماند."
           sleep 21600
