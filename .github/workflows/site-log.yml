@@ -59,7 +59,7 @@ jobs:
 
           class LoggingHandler(http.server.BaseHTTPRequestHandler):
               def log_message(self, format, *args):
-                  pass
+                  pass  # سایلنت کردن لاگ‌های پیش‌فرض
 
               def do_GET(self):
                   now = datetime.now()
@@ -69,6 +69,7 @@ jobs:
                   ref = self.headers.get('Referer', 'direct')
                   status_code = 200
 
+                  # اعمال Rate Limiting در صورت فعال بودن محافظت
                   if ENABLE_PROTECTION:
                       ip_request_times[ip] = [t for t in ip_request_times[ip] if (now - t).total_seconds() < 1.0]
                       if len(ip_request_times[ip]) >= RATE_LIMIT + BURST:
@@ -76,24 +77,28 @@ jobs:
                       else:
                           ip_request_times[ip].append(now)
 
-                  log_line = f"[{timestamp}] {ip} | {ua[:60]} | Referer: {ref} | Path: {self.path} | Status: {status_code}\n"
+                  # ثبت بازدید در لاگ
+                  log_line = f"[{timestamp}] {ip} | {ua[:80]} | Referer: {ref} | Path: {self.path} | Status: {status_code}\n"
                   with open(LOG_FILE, 'a') as f:
                       f.write(log_line)
                   print(f"📥 {ip} → {status_code}", flush=True)
 
+                  # ارسال پاسخ
                   self.send_response(status_code)
                   if status_code == 429:
                       self.send_header('Content-type', 'text/plain')
                       self.end_headers()
                       self.wfile.write(b"Rate limit exceeded. Slow down!\n")
                   else:
+                      # پاسخ دادن به هر مسیر با همون HTML (حل مشکل favicon و...)
                       self.send_header('Content-type', 'text/html')
+                      self.send_header('Cache-Control', 'no-cache')
                       self.end_headers()
                       self.wfile.write(HTML_PAGE.encode())
 
           class LogPusher(threading.Thread):
               def run(self):
-                  time.sleep(10)
+                  time.sleep(10)  # تأخیر اولیه برای اطمینان از وجود لاگ
                   while True:
                       try:
                           subprocess.run(['git', 'add', LOG_FILE], check=True)
@@ -125,7 +130,17 @@ jobs:
           echo "🚪 پورت: $SERVER_PORT"
           
           python3 server.py &
-          sleep 1
+          
+          # منتظر بمونیم تا سرور واقعاً بالا بیاد
+          echo "⏳ منتظر آماده شدن سرور..."
+          for i in {1..30}; do
+            if curl -s http://localhost:$SERVER_PORT >/dev/null 2>&1; then
+              echo "✅ سرور بعد از $i ثانیه آماده شد"
+              break
+            fi
+            sleep 1
+          done
+          
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           ./cloudflared tunnel --url http://localhost:${SERVER_PORT} 2>&1 | tee /tmp/cf-log &
