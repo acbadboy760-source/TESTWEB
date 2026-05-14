@@ -1,5 +1,5 @@
 Server Info
-URL: https://api.trycloudflare.com
-Runner IP: 64.236.153.162
+URL: https://garbage-millennium-enjoying-keyword.trycloudflare.com
+Runner IP: 52.188.86.146
 Port: 8080
 Protection: yes
