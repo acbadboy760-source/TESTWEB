@@ -1,1 +1,4 @@
 [2026-05-14 11:53:14] 127.0.0.1 | Mozilla/5.0 (compatible; Google-Apps-Script; beanserver; +ht | Referer: direct | Path: / | Status: 200
+[2026-05-14 11:53:16] 127.0.0.1 | Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML | Referer: direct | Path: / | Status: 200
+[2026-05-14 11:53:17] 127.0.0.1 | Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML | Referer: direct | Path: / | Status: 200
+[2026-05-14 11:53:17] 127.0.0.1 | Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML | Referer: direct | Path: / | Status: 200
