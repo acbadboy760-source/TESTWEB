@@ -40,10 +40,9 @@ jobs:
 
           LOG_FILE = "visitor_log.txt"
           ENABLE_PROTECTION = os.environ.get("PROTECTION", "no") == "yes"
-          RATE_LIMIT = 20          # حداکثر درخواست مجاز در ثانیه
-          BURST = 50               # ظرفیت انفجاری
+          RATE_LIMIT = 20
+          BURST = 50
 
-          # ساخت صفحه ساده
           HTML_PAGE = """<!DOCTYPE html>
           <html>
           <head><title>Test Target</title></head>
@@ -52,7 +51,6 @@ jobs:
           </body>
           </html>"""
 
-          # اگر محافظت فعال باشد، یک دیکشنری برای نگهداری زمان درخواست‌های هر IP
           if ENABLE_PROTECTION:
               ip_request_times = defaultdict(list)
               print("🛡️ محافظت DDoS (Rate Limiting) فعال است.")
@@ -61,7 +59,7 @@ jobs:
 
           class LoggingHandler(http.server.BaseHTTPRequestHandler):
               def log_message(self, format, *args):
-                  pass  # ساکت کنسول
+                  pass
 
               def do_GET(self):
                   now = datetime.now()
@@ -71,22 +69,18 @@ jobs:
                   ref = self.headers.get('Referer', 'direct')
                   status_code = 200
 
-                  # بررسی محدودیت نرخ
                   if ENABLE_PROTECTION:
-                      # حذف زمان‌های قدیمی
                       ip_request_times[ip] = [t for t in ip_request_times[ip] if (now - t).total_seconds() < 1.0]
                       if len(ip_request_times[ip]) >= RATE_LIMIT + BURST:
                           status_code = 429
                       else:
                           ip_request_times[ip].append(now)
 
-                  # ثبت در لاگ
                   log_line = f"[{timestamp}] {ip} | {ua[:60]} | Referer: {ref} | Path: {self.path} | Status: {status_code}\n"
                   with open(LOG_FILE, 'a') as f:
                       f.write(log_line)
                   print(f"📥 {ip} → {status_code}", flush=True)
 
-                  # پاسخ
                   self.send_response(status_code)
                   if status_code == 429:
                       self.send_header('Content-type', 'text/plain')
@@ -99,7 +93,7 @@ jobs:
 
           class LogPusher(threading.Thread):
               def run(self):
-                  time.sleep(10)  # اولین push رو با تأخیر انجام بده
+                  time.sleep(10)
                   while True:
                       try:
                           subprocess.run(['git', 'add', LOG_FILE], check=True)
