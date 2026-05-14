@@ -1,256 +1,140 @@
-name: Site Search + Visitor Countries + Active List + Log
+name: DDoS Target with Log & Optional Shield
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
+    inputs:
+      protection:
+        description: 'محافظت DDoS (rate limit)'
+        required: true
+        default: 'no'
+        type: choice
+        options:
+          - 'no'
+          - 'yes'
+
+permissions:
+  contents: write
 
 jobs:
-  run:
+  server:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: 📥 دریافت مخزن
+        uses: actions/checkout@v4
         with:
-          python-version: '3.11'
+          fetch-depth: 0
 
-      - name: Create enhanced server (search + visitor countries)
-        run: |
-          cat > server.py << 'EOF'
-          import http.server
-          import socketserver
-          import threading
-          import time
-          import datetime
-          import socket
-          import urllib.parse
-          import json
-          from collections import defaultdict
-          import os
-          import requests
-
-          PORT = 8000
-          LOG_FILE = "visitors.txt"
-          ACTIVE_FILE = "active.txt"
-          IP_API = "http://ip-api.com/json/{}?fields=country,countryCode,query"
-          GEO_CACHE = {}
-
-          class RateLimiter:
-              def __init__(self):
-                  self.lock = threading.Lock()
-                  self.buckets = defaultdict(lambda: {"tokens": 3, "last": time.monotonic()})
-                  self.ban_list = {}
-
-              def is_allowed(self, ip):
-                  now = time.monotonic()
-                  with self.lock:
-                      if ip in self.ban_list:
-                          if now < self.ban_list[ip]:
-                              return False
-                          else:
-                              del self.ban_list[ip]
-                      bucket = self.buckets[ip]
-                      elapsed = now - bucket["last"]
-                      bucket["tokens"] = min(3, bucket["tokens"] + elapsed * 1)
-                      bucket["last"] = now
-                      if bucket["tokens"] >= 1:
-                          bucket["tokens"] -= 1
-                          return True
-                      else:
-                          abuse_key = f"abuse_{ip}"
-                          self.buckets[abuse_key]["count"] = self.buckets[abuse_key].get("count", 0) + 1
-                          if self.buckets[abuse_key]["count"] >= 10:
-                              self.ban_list[ip] = now + 300
-                              print(f"🔥 BANNED IP {ip} for 5 min")
-                          return False
-
-          limiter = RateLimiter()
-          active_lock = threading.Lock()
-          active_ips = {}
-
-          def get_country(ip):
-              if ip in GEO_CACHE:
-                  return GEO_CACHE[ip]
-              try:
-                  resp = requests.get(IP_API.format(ip), timeout=2)
-                  if resp.status_code == 200:
-                      data = resp.json()
-                      if data.get("status") == "success":
-                          country = data.get("country", "Unknown")
-                          GEO_CACHE[ip] = country
-                          return country
-              except:
-                  pass
-              GEO_CACHE[ip] = "Unknown"
-              return "Unknown"
-
-          class Handler(http.server.BaseHTTPRequestHandler):
-              def do_GET(self):
-                  real_ip = self.headers.get("CF-Connecting-IP")
-                  if not real_ip:
-                      real_ip = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-                  if not real_ip:
-                      real_ip = self.client_address[0]
-
-                  if real_ip not in ("127.0.0.1", "::1"):
-                      if not limiter.is_allowed(real_ip):
-                          self.send_response(429)
-                          self.send_header("Content-type", "text/plain")
-                          self.end_headers()
-                          self.wfile.write(b"Too Many Requests - You are rate limited or banned.")
-                          return
-
-                  parsed = urllib.parse.urlparse(self.path)
-                  path = parsed.path
-                  query = urllib.parse.parse_qs(parsed.query)
-
-                  if path == "/":
-                      self.send_response(200)
-                      self.send_header("Content-type", "text/html; charset=utf-8")
-                      self.end_headers()
-
-                      url_param = query.get("url", [""])[0].strip()
-                      result_html = ""
-                      if url_param:
-                          try:
-                              host = url_param
-                              if "://" in host:
-                                  host = host.split("://")[1].split("/")[0]
-                              else:
-                                  host = host.split("/")[0]
-                              ip = socket.gethostbyname(host)
-                              country = get_country(ip)
-                              result_html = f"<p>🌐 <b>{host}</b> → IP: {ip} → Country: <b>{country}</b></p>"
-                          except Exception as e:
-                              result_html = f"<p>❌ Could not resolve <b>{url_param}</b>: {e}</p>"
-
-                      active_list = ""
-                      with active_lock:
-                          now = time.time()
-                          stale = [ip for ip, (t, _) in active_ips.items() if now - t > 60]
-                          for ip in stale:
-                              del active_ips[ip]
-                          if active_ips:
-                              active_list = "<ul>"
-                              for ip, (_, country) in sorted(active_ips.items()):
-                                  active_list += f"<li>{ip} - {country}</li>"
-                              active_list += "</ul>"
-                          else:
-                              active_list = "<p>No visitors online.</p>"
-
-                      html = f"""<!DOCTYPE html>
-          <html>
-          <head><title>Site Search & Visitor Map</title></head>
-          <body>
-              <h1>🔍 Search a website to see its host country</h1>
-              <form method="get">
-                  <input name="url" placeholder="e.g. google.com" value="{url_param}">
-                  <button type="submit">Lookup</button>
-              </form>
-              {result_html}
-              <hr>
-              <h2>👥 Visitors online ({len(active_ips)}):</h2>
-              {active_list}
-          </body>
-          </html>"""
-                      self.wfile.write(html.encode())
-                  else:
-                      self.send_response(404)
-                      self.send_header("Content-type", "text/plain")
-                      self.end_headers()
-                      self.wfile.write(b"Not found")
-
-                  if real_ip not in ("127.0.0.1", "::1"):
-                      now_iso = datetime.datetime.now().isoformat()
-                      country = get_country(real_ip)
-                      with open(LOG_FILE, "a") as f:
-                          f.write(f"{real_ip} ({country}) - {now_iso}\n")
-                      with active_lock:
-                          active_ips[real_ip] = (time.time(), country)
-
-              def log_message(self, format, *args):
-                  return
-
-          def update_active_file():
-              while True:
-                  time.sleep(30)
-                  now = time.time()
-                  with active_lock:
-                      stale = [ip for ip, (t, _) in active_ips.items() if now - t > 60]
-                      for ip in stale:
-                          del active_ips[ip]
-                      with open(ACTIVE_FILE, "w") as f:
-                          for ip in sorted(active_ips.keys()):
-                              _, country = active_ips[ip]
-                              f.write(f"{ip} {country}\n")
-                  print(f"🟢 Active IPs updated: {len(active_ips)} currently online.")
-
-          threading.Thread(target=update_active_file, daemon=True).start()
-
-          class FortressServer(socketserver.ThreadingTCPServer):
-              allow_reuse_address = True
-              request_queue_size = 100000
-
-          with FortressServer(("0.0.0.0", PORT), Handler) as httpd:
-              print(f"Enhanced server running on port {PORT}")
-              httpd.serve_forever()
-          EOF
-
-      - name: Increase system limits
-        run: |
-          ulimit -n 65536
-          ulimit -u 65536 || true
-          echo "ulimit -n $(ulimit -n)"
-
-      - name: Start server & create log files
-        run: |
-          touch visitors.txt active.txt   # از اول فایل‌ها وجود داشته باشن
-          nohup python3 server.py &
-          echo "SERVER_PID=$!" >> $GITHUB_ENV
-          sleep 2
-
-      - name: Install cloudflared and expose
-        run: |
-          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-          chmod +x cloudflared
-          sudo mv cloudflared /usr/local/bin/
-          cloudflared tunnel --url http://localhost:8000 > tunnel.log 2>&1 &
-          echo "TUNNEL_PID=$!" >> $GITHUB_ENV
-          sleep 5
-          PUBLIC_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -n1)
-          echo "🌐 Public URL: $PUBLIC_URL"
-          echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
-
-      - name: Show initial RAM
-        run: |
-          echo "Server process RAM:"
-          ps -o pid,rss,comm -p $SERVER_PID --no-headers || true
-          free -h | grep Mem
-
-      - name: Log every 1 min (visitors + active + countries) and commit
+      - name: ⚙️ تنظیمات Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # مطمئن شو فایل‌ها موجود باشن (در صورت پاک شدن ناگهانی)
-          touch visitors.txt active.txt
-          while true; do
-            sleep 60
-            echo "⏰ === Minute Update ==="
-            echo "📋 Total visitors logged: $(wc -l < visitors.txt 2>/dev/null || echo 0)"
-            if [ -f active.txt ]; then
-              echo "👥 Currently active IPs: $(wc -l < active.txt 2>/dev/null || echo 0)"
-              echo "   Active IPs (with countries):"
-              cat active.txt 2>/dev/null || true
-            else
-              echo "👥 No active file yet."
-            fi
-            echo "💾 System RAM:"
-            free -h | grep Mem
-            echo "🐍 Server RAM:"
-            ps -o pid,rss,comm -p $SERVER_PID --no-headers || true
-            git add visitors.txt active.txt 2>/dev/null
-            git commit -m "Update logs $(date -u +'%Y-%m-%d %H:%M:%S UTC')" || echo "No changes"
-            git push origin HEAD || echo "⚠️ Push failed (maybe branch protection), continuing..."
-          done
+
+      - name: 🏗️ ساخت سرور با لاگ‌گیر و محافظ اختیاری
+        run: |
+          cat > server.py << 'PYEOF'
+          import http.server
+          import socketserver
+          import os, subprocess, threading, time
+          from datetime import datetime
+          from collections import defaultdict
+
+          LOG_FILE = "visitor_log.txt"
+          ENABLE_PROTECTION = os.environ.get("PROTECTION", "no") == "yes"
+          RATE_LIMIT = 20          # حداکثر درخواست مجاز در ثانیه
+          BURST = 50               # ظرفیت انفجاری
+
+          # ساخت صفحه ساده
+          HTML_PAGE = """<!DOCTYPE html>
+          <html>
+          <head><title>Test Target</title></head>
+          <body style="background:#111;color:#0f0;font-family:monospace;display:flex;justify-content:center;align-items:center;height:100vh;">
+              <h1>🟢 Server is alive</h1>
+          </body>
+          </html>"""
+
+          # اگر محافظت فعال باشد، یک دیکشنری برای نگهداری زمان درخواست‌های هر IP
+          if ENABLE_PROTECTION:
+              ip_request_times = defaultdict(list)
+              print("🛡️ محافظت DDoS (Rate Limiting) فعال است.")
+          else:
+              print("⚡ بدون محافظت – تمام درخواست‌ها پذیرفته می‌شوند.")
+
+          class LoggingHandler(http.server.BaseHTTPRequestHandler):
+              def log_message(self, format, *args):
+                  pass  # ساکت کنسول
+
+              def do_GET(self):
+                  now = datetime.now()
+                  timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
+                  ip = self.client_address[0]
+                  ua = self.headers.get('User-Agent', 'unknown')
+                  ref = self.headers.get('Referer', 'direct')
+                  status_code = 200
+
+                  # بررسی محدودیت نرخ
+                  if ENABLE_PROTECTION:
+                      # حذف زمان‌های قدیمی
+                      ip_request_times[ip] = [t for t in ip_request_times[ip] if (now - t).total_seconds() < 1.0]
+                      if len(ip_request_times[ip]) >= RATE_LIMIT + BURST:
+                          status_code = 429
+                      else:
+                          ip_request_times[ip].append(now)
+
+                  # ثبت در لاگ
+                  log_line = f"[{timestamp}] {ip} | {ua[:60]} | Referer: {ref} | Path: {self.path} | Status: {status_code}\n"
+                  with open(LOG_FILE, 'a') as f:
+                      f.write(log_line)
+                  print(f"📥 {ip} → {status_code}", flush=True)
+
+                  # پاسخ
+                  self.send_response(status_code)
+                  if status_code == 429:
+                      self.send_header('Content-type', 'text/plain')
+                      self.end_headers()
+                      self.wfile.write(b"Rate limit exceeded. Slow down!\n")
+                  else:
+                      self.send_header('Content-type', 'text/html')
+                      self.end_headers()
+                      self.wfile.write(HTML_PAGE.encode())
+
+          class LogPusher(threading.Thread):
+              def run(self):
+                  time.sleep(10)  # اولین push رو با تأخیر انجام بده
+                  while True:
+                      try:
+                          subprocess.run(['git', 'add', LOG_FILE], check=True)
+                          subprocess.run(['git', 'commit', '-m', 'Auto-update visitor log'], check=True)
+                          subprocess.run(['git', 'pull', '--rebase'], check=True)
+                          subprocess.run(['git', 'push'], check=True)
+                          print("📤 لاگ با موفقیت به مخزن ارسال شد.")
+                      except Exception as e:
+                          print(f"⚠️ Push ناموفق: {e}")
+                      time.sleep(10)
+
+          PORT = 8080
+          with socketserver.TCPServer(("0.0.0.0", PORT), LoggingHandler) as httpd:
+              print(f"🌐 سرور روی پورت {PORT} آماده است.")
+              pusher = LogPusher(daemon=True)
+              pusher.start()
+              httpd.serve_forever()
+          PYEOF
+
+      - name: 🚀 راه‌اندازی سرور و تونل
+        env:
+          PROTECTION: ${{ github.event.inputs.protection }}
+        run: |
+          python3 server.py &
+          sleep 1
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          ./cloudflared tunnel --url http://localhost:8080 2>&1 | tee /tmp/cf-log &
+          sleep 12
+          URL=$(grep -oP 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cf-log | head -n 1)
+          echo "🌐 **لینک سایت هدف:** $URL"
+          if [ "$PROTECTION" = "yes" ]; then
+            echo "🛡️ محافظت DDoS فعال است (Rate Limit: 20 req/s + 50 burst)."
+          else
+            echo "⚡ بدون محافظت – تمام درخواست‌ها پذیرفته می‌شوند."
+          fi
+          echo "⏱️ سرور تا ۶ ساعت آنلاین می‌ماند."
+          sleep 21600
